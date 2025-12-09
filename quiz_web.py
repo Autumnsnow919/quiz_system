@@ -1,80 +1,110 @@
 import streamlit as st
 import re
 import random
-import time
 
 # ===========================
-# 1. 界面配置与 CSS 美化
+# 1. 界面配置与移动端适配 CSS
 # ===========================
-st.set_page_config(page_title="习概题库刷题系统", page_icon="🎓", layout="centered")
+st.set_page_config(page_title="习概刷题神器", page_icon="📝", layout="centered")
 
-# 自定义 CSS 让界面更好看
 st.markdown("""
     <style>
+    /* 全局背景 */
     .stApp {
-        background-color: #f5f7f9;
+        background-color: #f0f2f6;
     }
+
+    /* 题目卡片样式 - 移动端适配优化 */
     .question-card {
         background-color: white;
         padding: 20px;
-        border-radius: 10px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        margin-bottom: 20px;
-        font-size: 18px;
+        border-radius: 12px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        margin-bottom: 25px;
+        font-size: 1.1rem; /* 稍微调大字体适合手机阅读 */
         font-weight: 500;
-        color: #333;
+        color: #2c3e50;
+        line-height: 1.6;
     }
-    .option-box {
-        font-size: 16px;
+
+    /* 徽章样式 */
+    .badge {
+        display: inline-block;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 0.8rem;
+        font-weight: bold;
+        color: white;
+        margin-right: 8px;
+        vertical-align: middle;
     }
-    .success-msg {
-        padding: 10px;
-        border-radius: 5px;
-        background-color: #d4edda;
-        color: #155724;
-        border: 1px solid #c3e6cb;
+    .badge-single { background-color: #3498db; }
+    .badge-multi { background-color: #9b59b6; }
+    .badge-judge { background-color: #e67e22; }
+
+    /* 成功/失败 提示框 */
+    .result-box {
+        padding: 15px;
+        border-radius: 8px;
+        margin-top: 15px;
+        margin-bottom: 15px;
+        font-weight: bold;
     }
-    .error-msg {
-        padding: 10px;
-        border-radius: 5px;
-        background-color: #f8d7da;
-        color: #721c24;
-        border: 1px solid #f5c6cb;
+    .success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+    .error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+
+    /* 调整移动端按钮间距 */
+    div.stButton > button {
+        border-radius: 8px;
+        height: 3em;
+        font-weight: bold;
     }
     </style>
 """, unsafe_allow_html=True)
 
 
 # ===========================
-# 2. 核心逻辑：题库解析
+# 2. 核心逻辑：智能题库解析
 # ===========================
 @st.cache_data
 def load_and_parse_questions(file_content):
-    """解析题库文本，返回单选题和多选题列表"""
+    """
+    解析题库文本
+    返回: (单选题列表, 多选题列表, 判断题列表)
+    """
     single_choice = []
     multi_choice = []
+    judge_choice = []
 
     lines = file_content.split('\n')
     current_section = None
     current_q = None
 
-    # 正则表达式预编译
+    # --- 正则表达式 ---
+    # 匹配大标题：一、单项选择题 / 二、多项... / 三、判断题
     section_pat = re.compile(r'^[一二三四]、\s*(.*)')
+    # 匹配题目开头：1. / 1． / 10.
     q_start_pat = re.compile(r'^(\d+)\s*[.．](.*)')
-    ans_pat = re.compile(r'^\s*答案\s*[：:]\s*([A-E]+)', re.IGNORECASE)
+    # 匹配答案：答案：A / 答案：对 / 答案：错
+    # 这里的正则兼容了字母和汉字(对/错)
+    ans_pat = re.compile(r'^\s*答案\s*[：:]\s*([A-E]+|[对错])', re.IGNORECASE)
+    # 匹配解析
     expl_pat = re.compile(r'^\s*答案解析\s*[：:]\s*(.*)')
 
     def save_q(q):
-        if q and q['type'] == 'single':
+        if not q: return
+        if q['type'] == 'single':
             single_choice.append(q)
-        elif q and q['type'] == 'multi':
+        elif q['type'] == 'multi':
             multi_choice.append(q)
+        elif q['type'] == 'judge':
+            judge_choice.append(q)
 
     for line in lines:
         line = line.strip()
         if not line: continue
 
-        # 识别大标题
+        # 1. 检测大标题
         sec_match = section_pat.match(line)
         if sec_match:
             save_q(current_q)
@@ -84,13 +114,15 @@ def load_and_parse_questions(file_content):
                 current_section = 'single'
             elif "多项" in title:
                 current_section = 'multi'
+            elif "判断" in title:
+                current_section = 'judge'
             else:
-                current_section = 'ignore'
+                current_section = 'ignore'  # 忽略简答题
             continue
 
         if current_section == 'ignore': continue
 
-        # 识别题目开始
+        # 2. 检测题目开始
         q_match = q_start_pat.match(line)
         if q_match:
             save_q(current_q)
@@ -104,73 +136,87 @@ def load_and_parse_questions(file_content):
             }
             continue
 
-        # 识别题目内容
+        # 3. 解析题目详情
         if current_q:
-            # 识别答案
+            # 解析答案
             ans_match = ans_pat.match(line)
             if ans_match:
-                current_q['answer'] = ans_match.group(1).upper()
+                raw_ans = ans_match.group(1).upper()  # 转大写
+                current_q['answer'] = raw_ans
                 continue
 
-            # 识别解析
+            # 解析解析
             expl_match = expl_pat.match(line)
             if expl_match:
                 current_q['explanation'] = expl_match.group(1)
                 continue
 
-            # 识别选项 (支持同一行多个选项或换行选项)
-            inline_opts = list(re.finditer(r'([A-E])\s*[.．]\s*(.*?)(?=\s+[A-E]\s*[.．]|$)', line))
-            if inline_opts:
-                for m in inline_opts:
-                    current_q['options'][m.group(1)] = m.group(2).strip()
-            elif not line.startswith("答案"):
-                # 如果不是答案行，拼接到题目或最后一个选项
-                if not current_q['options']:
-                    current_q['content'] += line
-                else:
-                    last_key = sorted(current_q['options'].keys())[-1]
-                    current_q['options'][last_key] += " " + line
+            # 解析选项 (仅针对单选和多选)
+            if current_q['type'] in ['single', 'multi']:
+                # 查找行内的 A. xxx B. xxx
+                inline_opts = list(re.finditer(r'([A-E])\s*[.．]\s*(.*?)(?=\s+[A-E]\s*[.．]|$)', line))
+                if inline_opts:
+                    for m in inline_opts:
+                        current_q['options'][m.group(1)] = m.group(2).strip()
+                elif not line.startswith("答案"):
+                    # 处理换行的情况
+                    if not current_q['options']:
+                        # 还没有选项，说明这一行属于题干的延续
+                        current_q['content'] += line
+                    else:
+                        # 已经有选项了，说明这一行属于上一个选项的延续
+                        last_key = sorted(current_q['options'].keys())[-1]
+                        current_q['options'][last_key] += " " + line
 
-    save_q(current_q)
-    return single_choice, multi_choice
+            # 解析判断题 (内容直接拼接，直到遇到答案)
+            elif current_q['type'] == 'judge':
+                if not line.startswith("答案"):
+                    current_q['content'] += line
+
+    save_q(current_q)  # 保存最后一题
+    return single_choice, multi_choice, judge_choice
 
 
 # ===========================
 # 3. 状态管理
 # ===========================
 def init_session():
-    if 'quiz_state' not in st.session_state:
-        st.session_state.quiz_state = 'setup'  # setup, playing, finished
-    if 'current_idx' not in st.session_state:
-        st.session_state.current_idx = 0
-    if 'score' not in st.session_state:
-        st.session_state.score = 0
-    if 'quiz_list' not in st.session_state:
-        st.session_state.quiz_list = []
-    if 'user_submitted' not in st.session_state:
-        st.session_state.user_submitted = False
-    if 'raw_text' not in st.session_state:
-        # 尝试自动读取本地文件
+    defaults = {
+        'quiz_state': 'setup',
+        'current_idx': 0,
+        'score': 0,
+        'quiz_list': [],
+        'user_submitted': False,
+        'raw_text': ""
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+    # 尝试自动读取
+    if not st.session_state.raw_text:
         try:
             with open("tiku.txt", "r", encoding="utf-8") as f:
                 st.session_state.raw_text = f.read()
         except:
-            st.session_state.raw_text = ""
+            pass
 
 
 def start_quiz(mode, num):
-    singles, multis = load_and_parse_questions(st.session_state.raw_text)
+    singles, multis, judges = load_and_parse_questions(st.session_state.raw_text)
 
     pool = []
     if mode == "单选题":
         pool = singles
     elif mode == "多选题":
         pool = multis
-    else:
-        pool = singles + multis
+    elif mode == "判断题":
+        pool = judges
+    else:  # 混合模式
+        pool = singles + multis + judges
 
     if not pool:
-        st.error("未检测到题目，请检查题库内容是否粘贴正确。")
+        st.error("⚠️ 未检测到题目！请检查 tiku.txt 是否包含有效内容。")
         return
 
     real_num = min(num, len(pool))
@@ -196,152 +242,167 @@ def restart():
 
 
 # ===========================
-# 4. 界面渲染
+# 4. 主界面渲染
 # ===========================
 def main():
     init_session()
 
-    st.title("🎓 习概题库刷题系统")
+    # 顶部标题栏
+    st.title("📝 习概刷题系统")
 
-    # --- 侧边栏：设置 ---
+    # --- 侧边栏 ---
     with st.sidebar:
         st.header("⚙️ 设置")
 
-        # 允许用户粘贴题库（如果没有自动读取到文件）
+        # 题库加载区
         if not st.session_state.raw_text:
-            st.warning("未检测到 tiku.txt")
-            user_input = st.text_area("请在此处粘贴题库内容：", height=200)
-            if user_input:
-                st.session_state.raw_text = user_input
+            st.warning("未找到 tiku.txt")
+            st.session_state.raw_text = st.text_area("请粘贴题库内容：", height=150)
         else:
-            st.success("✅ 已加载题库文件")
-            with st.expander("查看/更新题库内容"):
-                new_text = st.text_area("题库内容", value=st.session_state.raw_text, height=150)
-                if new_text != st.session_state.raw_text:
-                    st.session_state.raw_text = new_text
+            st.success(f"✅ 题库已就绪")
+            with st.expander("查看/编辑题库"):
+                st.session_state.raw_text = st.text_area("", st.session_state.raw_text, height=200)
 
-        st.divider()
+        st.markdown("---")
+        mode = st.selectbox("选择题型", ["单选题", "多选题", "判断题", "全题型混合"])
+        num = st.slider("刷题数量", 5, 200, 10)
 
-        mode = st.radio("选择题型", ["单选题", "多选题", "混合模式 (单选+多选)"])
-        num_questions = st.number_input("刷题数量", min_value=1, max_value=200, value=10)
-
-        if st.button("🚀 开始测试", use_container_width=True):
+        if st.button("🚀 开始刷题", use_container_width=True, type="primary"):
             if st.session_state.raw_text:
-                start_quiz(mode, num_questions)
+                start_quiz(mode, num)
             else:
-                st.error("请先提供题库内容！")
+                st.error("请先导入题库")
 
-    # --- 主界面逻辑 ---
+    # --- 主逻辑 ---
 
-    # 1. 准备阶段
+    # 1. 初始页
     if st.session_state.quiz_state == 'setup':
-        st.info("👈 请在左侧侧边栏配置并点击“开始测试”")
+        st.info("👈 请点击左上角箭头打开侧边栏进行设置")
         st.markdown("""
-        ### 使用说明：
-        1. 确保目录下有 `tiku.txt` 文件，或者在左侧粘贴文本。
-        2. 选择你想练习的题型。
-        3. 系统会自动随机抽取题目。
-        4. 交卷后会立即显示解析。
+        ### 📱 移动端适配版
+        - **支持题型**：单选、多选、判断
+        - **智能解析**：自动忽略简答题
+        - **操作便捷**：大按钮设计，防止误触
         """)
-        st.image("https://streamlit.io/images/brand/streamlit-mark-color.png", width=100)
 
-    # 2. 答题阶段
+    # 2. 答题页
     elif st.session_state.quiz_state == 'playing':
-        total = len(st.session_state.quiz_list)
-        current = st.session_state.current_idx
-        q_data = st.session_state.quiz_list[current]
+        q_list = st.session_state.quiz_list
+        idx = st.session_state.current_idx
+        q_data = q_list[idx]
+        total = len(q_list)
 
         # 进度条
-        progress = (current) / total
-        st.progress(progress)
-        st.caption(f"进度: {current + 1} / {total}")
+        st.progress((idx + 1) / total)
+        st.caption(f"进度：{idx + 1} / {total}")
 
-        # 题目卡片
-        type_badge = "🔵 单选" if q_data['type'] == 'single' else "🟣 多选"
+        # 渲染题目卡片
+        badge_class = "badge-single"
+        badge_text = "单选"
+        if q_data['type'] == 'multi':
+            badge_class = "badge-multi";
+            badge_text = "多选"
+        elif q_data['type'] == 'judge':
+            badge_class = "badge-judge";
+            badge_text = "判断"
+
         st.markdown(f"""
         <div class="question-card">
-            {type_badge} {q_data['content']}
+            <span class="badge {badge_class}">{badge_text}</span>
+            {q_data['content']}
         </div>
         """, unsafe_allow_html=True)
 
-        # 选项显示
-        sorted_opts = sorted(q_data['options'].items())
+        # 渲染选项交互
         user_choice = []
 
-        # 根据题型渲染不同的输入组件
+        # --- 单选题 ---
         if q_data['type'] == 'single':
-            # 使用 radio，为了方便判断，我们在选项前加 A. B.
-            options_display = [f"{k}. {v}" for k, v in sorted_opts]
-            # 如果已经提交了，禁用输入
+            opts = sorted(q_data['options'].items())
+            opt_labels = [f"{k}. {v}" for k, v in opts]
             choice = st.radio(
-                "请选择答案：",
-                options_display,
-                index=None,
-                key=f"q_{current}",
-                disabled=st.session_state.user_submitted
+                "请选择：", opt_labels, index=None, key=f"q_{idx}",
+                disabled=st.session_state.user_submitted,
+                label_visibility="collapsed"
             )
-            if choice:
-                user_choice = [choice.split('.')[0]]
-        else:
-            # 多选使用 checkbox
-            st.write("请选择答案（多选）：")
-            for k, v in sorted_opts:
-                checked = st.checkbox(
-                    f"{k}. {v}",
-                    key=f"q_{current}_{k}",
-                    disabled=st.session_state.user_submitted
-                )
-                if checked:
+            if choice: user_choice = [choice.split('.')[0]]
+
+        # --- 判断题 ---
+        elif q_data['type'] == 'judge':
+            choice = st.radio(
+                "请判断：", ["对", "错"], index=None, key=f"q_{idx}",
+                disabled=st.session_state.user_submitted,
+                horizontal=True
+            )
+            if choice: user_choice = [choice]
+
+        # --- 多选题 ---
+        elif q_data['type'] == 'multi':
+            st.write("请选择（多选）：")
+            opts = sorted(q_data['options'].items())
+            for k, v in opts:
+                if st.checkbox(f"{k}. {v}", key=f"q_{idx}_{k}", disabled=st.session_state.user_submitted):
                     user_choice.append(k)
 
-        # 提交按钮
+        # 按钮区
+        st.markdown("<br>", unsafe_allow_html=True)
         if not st.session_state.user_submitted:
-            if st.button("提交答案", type="primary"):
-                st.session_state.user_submitted = True
-                st.rerun()
+            if st.button("提交答案", type="primary", use_container_width=True):
+                if not user_choice:
+                    st.warning("请先做出选择")
+                else:
+                    st.session_state.user_submitted = True
+                    st.rerun()
         else:
-            # --- 判定逻辑 ---
-            user_ans_str = "".join(sorted(user_choice))
-            correct_ans_str = "".join(sorted(q_data['answer']))
+            # --- 判分逻辑 ---
+            # 统一转换排序：多选 'BA' -> 'AB'
+            u_ans = "".join(sorted(user_choice))
+            c_ans = "".join(sorted(q_data['answer']))
 
-            is_correct = (user_ans_str == correct_ans_str)
+            is_correct = (u_ans == c_ans)
 
             if is_correct:
-                st.markdown('<div class="success-msg">✅ <b>回答正确！</b></div>', unsafe_allow_html=True)
-                # 防止重复加分 (Streamlit 刷新机制) - 这里的简易逻辑依赖于只点一次 Next
+                st.markdown(f'<div class="result-box success">✅ 回答正确！</div>', unsafe_allow_html=True)
             else:
-                st.markdown(f'<div class="error-msg">❌ <b>回答错误</b></div>', unsafe_allow_html=True)
-                st.write(f"**正确答案：** `{q_data['answer']}`")
+                st.markdown(f'<div class="result-box error">❌ 回答错误<br>正确答案：{c_ans}</div>',
+                            unsafe_allow_html=True)
 
-            # 显示解析
+            # 解析
             if q_data['explanation']:
-                with st.expander("📖 查看解析", expanded=True):
+                with st.expander("🔍 查看解析", expanded=True):
                     st.write(q_data['explanation'])
 
             # 下一题按钮
-            col1, col2 = st.columns([4, 1])
-            with col2:
-                btn_text = "下一题 ➡" if current < total - 1 else "查看结果 🏁"
-                if st.button(btn_text, type="primary"):
-                    if is_correct:
-                        st.session_state.score += 1
+            if idx < total - 1:
+                if st.button("下一题 ➡", type="primary", use_container_width=True):
+                    if is_correct: st.session_state.score += 1
                     next_question()
+            else:
+                if st.button("查看结果 🏁", type="primary", use_container_width=True):
+                    if is_correct: st.session_state.score += 1
+                    st.session_state.quiz_state = 'finished'
+                    st.rerun()
 
-    # 3. 结算界面
+    # 3. 结算页
     elif st.session_state.quiz_state == 'finished':
         st.balloons()
+        score = st.session_state.score
+        total = len(st.session_state.quiz_list)
+        rate = score / total * 100
+
         st.markdown(f"""
-        <div style="text-align: center; padding: 50px;">
-            <h1>🎉 测试完成！</h1>
-            <h2>你的得分</h2>
-            <h1 style="color: #00cc66; font-size: 80px;">{st.session_state.score} / {len(st.session_state.quiz_list)}</h1>
-            <p>准确率: {(st.session_state.score / len(st.session_state.quiz_list)) * 100:.1f}%</p>
+        <div style="text-align: center; padding: 40px 20px; background: white; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
+            <h2 style="color: #2c3e50;">测试完成！🎉</h2>
+            <div style="font-size: 60px; color: {'#27ae60' if rate >= 60 else '#e74c3c'}; font-weight: bold; margin: 20px 0;">
+                {score} <span style="font-size: 30px; color: #7f8c8d;">/ {total}</span>
+            </div>
+            <p style="font-size: 18px; color: #7f8c8d;">正确率: {rate:.1f}%</p>
         </div>
         """, unsafe_allow_html=True)
 
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.button("🔄 再来一轮", on_click=restart, use_container_width=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🔄 再刷一轮", type="primary", use_container_width=True):
+            restart()
 
 
 if __name__ == "__main__":
