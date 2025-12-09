@@ -26,12 +26,12 @@ pip install streamlit
 
 **方式 A (推荐)**：
 ```bash
-streamlit run web_quiz.py
+streamlit run quiz_web.py
 ```
 
 **方式 B (Anaconda 用户)**：
 ```bash
-D:\Anaconda\python.exe -m streamlit run web_quiz.py
+D:\Anaconda\python.exe -m streamlit run quiz_web.py
 ```
 
 ### 2. 开始刷题
